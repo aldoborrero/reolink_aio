@@ -24,6 +24,8 @@ from ..const import (
     MIN_COLOR_TEMP,
     NONE_WAKING_COMMANDS,
     RETRY_ATTEMPTS,
+    SCENE_IOT_TASKS,
+    SCENE_IPC_TASKS,
     TIMEOUT,
     UNKNOWN,
     YOLO_CONVERSION,
@@ -200,6 +202,7 @@ class Baichuan:
         # host states
         self._ports: dict[str, dict[str, int | bool | str]] = {}
         self._scenes: dict[int, str] = {}
+        self._scene_tasks: dict[int, dict[str, dict[int, int]]] = {}  # scene_id: {"ipc"/"iot": {channel: task bitmask}}
         self._active_scene: int = -1
         self._day_night_state: dict[int, str] = {}
         self._dev_type: str = ""
@@ -4208,17 +4211,27 @@ class Baichuan:
         await self.send(cmd_id=225, channel=channel, body=xml)
 
     async def get_scene_info(self, scene_id: int) -> None:
-        """Get the name of a scene"""
+        """Get the name and the tasks per camera channel/IoT device of a scene"""
         xml = xmls.GetSceneInfo.format(scene_id=scene_id)
         mess = await self.send(cmd_id=604, body=xml)
+        root = XML.fromstring(mess)
 
-        data = get_keys_from_xml(mess, {"id": ("scene_id", int), "valid": ("valid", int), "name": ("name", str)})
+        data = get_keys_from_xml(root, {"id": ("scene_id", int), "valid": ("valid", int), "name": ("name", str)})
         if data.get("scene_id") != scene_id:
             raise UnexpectedDataError(f"Baichuan host {self._host}: get_scene_info requested scene_id {scene_id} but received {data.get('scene_id')}")
         if data.get("valid") != 1:
             raise UnexpectedDataError(f"Baichuan host {self._host}: get_scene_info got invalid scene for scene_id {scene_id}")
 
         self._scenes[scene_id] = data["name"]
+
+        tasks: dict[str, dict[int, int]] = {"ipc": {}, "iot": {}}
+        for kind, masks in tasks.items():
+            for item in root.findall(f".//{kind}"):
+                chn = get_value_from_xml(item, "chn", int)
+                mask = get_value_from_xml(item, "switch", int)
+                if chn is not None and mask is not None:
+                    masks[chn] = mask
+        self._scene_tasks[scene_id] = tasks
 
     async def get_scene(self) -> int:
         """Get the currently active scene"""
@@ -4236,12 +4249,17 @@ class Baichuan:
             self._active_scene = cur_scene
         return self._active_scene
 
-    async def set_scene(self, scene_id: int | None = None, scene_name: str | None = None) -> None:
-        """Set the active scene"""
+    def _scene_id(self, scene_id: int | None, scene_name: str | None) -> int | None:
+        """Scene id of scene_name if given and known, otherwise scene_id"""
         if scene_name is not None:
             ids = [key for key, val in self._scenes.items() if val == scene_name]
             if ids:
-                scene_id = ids[0]
+                return ids[0]
+        return scene_id
+
+    async def set_scene(self, scene_id: int | None = None, scene_name: str | None = None) -> None:
+        """Set the active scene"""
+        scene_id = self._scene_id(scene_id, scene_name)
         if scene_id not in self._scenes:
             raise InvalidParameterError(f"Baichuan host {self._host}: set_scene scene_id {scene_id} not in {list(self._scenes.keys())}")
 
@@ -4851,6 +4869,18 @@ class Baichuan:
     @property
     def active_scene(self) -> str:
         return self._scenes.get(self._active_scene, UNKNOWN)
+
+    def scene_tasks(self, channel: int, scene_id: int | None = None, scene_name: str | None = None, iot: bool = False) -> list[str]:
+        """Tasks a camera channel performs in a scene, or with iot=True the tasks of the IoT device with that index.
+
+        Returns names from SCENE_IPC_TASKS (or SCENE_IOT_TASKS).
+        """
+        scene_id = self._scene_id(scene_id, scene_name)
+        if scene_id is None:
+            return []
+        mask = self._scene_tasks.get(scene_id, {}).get("iot" if iot else "ipc", {}).get(channel, 0)
+        task_bits = SCENE_IOT_TASKS if iot else SCENE_IPC_TASKS
+        return [task for task, bit in task_bits.items() if (mask >> bit) & 1]
 
     def model(self, channel: int | None = None) -> str | None:
         return self._dev_info.get(channel, {}).get("type")

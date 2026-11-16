@@ -75,3 +75,7 @@ YOLO_DETECT_TYPES = {
     "package": ["package"],
     "non-motor vehicle": ["bicycle"],
 }
+
+# Home Hub scene task bits: per camera channel (<ipc>) and per IoT device (<iot>) in a scene
+SCENE_IPC_TASKS = {"record": 0, "ftp": 1, "email": 2, "push": 3, "audio": 4, "linkage": 5, "speaker": 6, "track": 7, "light": 8}
+SCENE_IOT_TASKS = {"linkage": 0, "device": 1}
