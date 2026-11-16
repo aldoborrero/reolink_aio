@@ -237,6 +237,9 @@ OnlineUpdate = """
 </OnlineUpdate>
 </body>"""
 
+# declaration as sent by the device, for xml that is modified and sent back
+XML_DECLARATION = '<?xml version="1.0" encoding="UTF-8" ?>\n'
+
 GetSceneInfo = """
 <?xml version="1.0" encoding="UTF-8" ?>
 <body>

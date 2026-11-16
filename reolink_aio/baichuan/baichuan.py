@@ -4212,6 +4212,10 @@ class Baichuan:
 
     async def get_scene_info(self, scene_id: int) -> None:
         """Get the name and the tasks per camera channel/IoT device of a scene"""
+        await self._get_scene_cfg(scene_id)
+
+    async def _get_scene_cfg(self, scene_id: int) -> XML.Element:
+        """Get the sceneCfg of a scene, store its name and tasks and return the received xml"""
         xml = xmls.GetSceneInfo.format(scene_id=scene_id)
         mess = await self.send(cmd_id=604, body=xml)
         root = XML.fromstring(mess)
@@ -4232,6 +4236,7 @@ class Baichuan:
                 if chn is not None and mask is not None:
                     masks[chn] = mask
         self._scene_tasks[scene_id] = tasks
+        return root
 
     async def get_scene(self) -> int:
         """Get the currently active scene"""
@@ -4270,6 +4275,38 @@ class Baichuan:
 
         await self.send(cmd_id=602, body=xml)
         await self.get_scene()
+
+    async def set_scene_tasks(self, channel: int, tasks: list[str], scene_id: int | None = None, scene_name: str | None = None, iot: bool = False) -> None:
+        """Set the tasks a camera channel performs in a scene, or with iot=True the tasks of the IoT device with that index.
+
+        tasks are names from SCENE_IPC_TASKS (or SCENE_IOT_TASKS), tasks not listed are switched off.
+        """
+        scene_id = self._scene_id(scene_id, scene_name)
+        if scene_id is None or scene_id < 0 or scene_id not in self._scenes:
+            raise InvalidParameterError(f"Baichuan host {self._host}: set_scene_tasks scene_id {scene_id} not in {[key for key in self._scenes if key >= 0]}")
+        task_bits = SCENE_IOT_TASKS if iot else SCENE_IPC_TASKS
+        if unknown := set(tasks) - task_bits.keys():
+            raise InvalidParameterError(f"Baichuan host {self._host}: set_scene_tasks unknown tasks {sorted(unknown)}, options {list(task_bits)}")
+
+        # cmd 605 takes the full sceneCfg, so modify the one just received and leave all other settings untouched
+        root = await self._get_scene_cfg(scene_id)
+        kind = "iot" if iot else "ipc"
+        items = [item for item in root.findall(f".//{kind}") if get_value_from_xml(item, "chn", int) == channel]
+        switch = items[0].find("switch") if items else None
+        if switch is None or switch.text is None:
+            raise InvalidParameterError(f"Baichuan host {self._host}: set_scene_tasks {kind} channel {channel} not found in scene {scene_id}")
+
+        known_bits = sum(1 << bit for bit in task_bits.values())
+        mask = int(switch.text) & ~known_bits  # keep bits this library does not know
+        for task in tasks:
+            mask |= 1 << task_bits[task]
+        switch.text = str(mask)
+
+        # serialize like the hub sends it (keeping empty tags such as <iconColor></iconColor>),
+        # this is the exact form that was verified to be accepted by cmd 605
+        xml = xmls.XML_DECLARATION + XML.tostring(root, encoding="unicode", short_empty_elements=False)
+        await self.send(cmd_id=605, body=xml)
+        await self.get_scene_info(scene_id)  # read back what the hub stored
 
     async def set_smart_ai(self, channel: int, smart_type: str, location: int, sensitivity: int | None = None, delay: int | None = None) -> None:
         """Change smart AI settings"""
